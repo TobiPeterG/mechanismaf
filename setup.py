@@ -14,6 +14,7 @@ setup(
     install_requires=[
         "numpy",
         "networkx",
+        "mechanism",
     ],
     python_requires=">=3.7",
     classifiers=[

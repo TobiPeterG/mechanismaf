@@ -1,0 +1,11 @@
+name: mechanismaf
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - networkx
+  - flake8
+  - pip
+  - pip:
+    - mechanism

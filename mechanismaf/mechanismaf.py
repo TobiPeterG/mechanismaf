@@ -12,14 +12,14 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
       - Bars that have unknown angles
       - Bars that sweep (angle_sweep)
     Supports multiple sweep vectors.
-    
+
     Parameters:
     - spec: List of specifications defining the mechanism.
-    - follow_points: Optional list of points to follow.
+    - follow_points: Optional list of points to follow (those joints become .follow=True).
     - log_level: Logging level (e.g., logging.DEBUG, logging.INFO).
     - log_file: Optional path to a file to write logs.
     """
-    
+
     # Configure the logger
     logger = logging.getLogger(__name__)
     logger.setLevel(log_level)
@@ -36,14 +36,14 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
 
         # Add the console handler to the logger
         logger.addHandler(ch)
-        
+
         # If a log_file is specified, add a FileHandler
         if log_file:
             fh = logging.FileHandler(log_file)
             fh.setLevel(log_level)
             fh.setFormatter(formatter)
             logger.addHandler(fh)
-        
+
     def assign_joint_names(joint_coords):
         joint_names = {}
         for idx, coord in enumerate(joint_coords):
@@ -75,7 +75,7 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
         return tuple(round(float(x), decimal) for x in coord)
 
     def deg_to_rad(deg):
-        return deg * np.pi / 180
+        return deg * np.pi / 180.0
 
     # -------------------------------------------------------------------------
     # A custom loop_equations that handles multiple sweep vectors
@@ -180,7 +180,6 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
         raise ValueError(f"Origin joint at {origin_coord} not found.")
 
     origin_joint = joints.get(origin_joint_name)
-
     if not origin_joint:
         raise ValueError(f"Origin joint {origin_joint_name} not found.")
 
@@ -219,6 +218,7 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
                 vec._is_user_fixed_angle = True
                 vec.natural_angle = natural_angle
                 vectors.append(vec)
+
             elif angle_sweep is not None:
                 # Sweep vector => unknown angle each iteration
                 vec = Vector(joints=(start_joint, end_joint), r=r, style=style)
@@ -228,6 +228,7 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
                 vec.natural_angle = natural_angle
                 sweep_vectors.append(vec)
                 vectors.append(vec)
+
             elif angle_deg is not None:
                 # Fixed angle (if any other fixed angles are specified)
                 natural_angle = np.arctan2(end_coord[1] - start_coord[1], end_coord[0] - start_coord[0])
@@ -235,6 +236,7 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
                 vec._is_user_fixed_angle = True
                 vec.natural_angle = natural_angle
                 vectors.append(vec)
+
             else:
                 # Unknown angle => set _is_user_fixed_angle=False
                 vec = Vector(joints=(start_joint, end_joint), r=r, style=style)
@@ -268,18 +270,25 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
             if element[0] == "bar":
                 if len(element) > 3 and isinstance(element[3], dict):
                     if 'angle_sweep' in element[3]:
-                        # Match the sweep vector by checking if the vector's joints match the bar's start or end coordinates
+                        # Match the sweep vector by checking if the vector's joints match
                         sweep_start = round_coord(element[1])
                         sweep_end = round_coord(element[2])
                         vec_start = joint_coords[vec.joints[0].name]
                         vec_end = joint_coords[vec.joints[1].name]
-                        if (sweep_start == vec_start and sweep_end == vec_end) or (sweep_start == vec_end and sweep_end == vec_start):
+                        if (
+                            (sweep_start == vec_start and sweep_end == vec_end) or
+                            (sweep_start == vec_end   and sweep_end == vec_start)
+                        ):
                             sweep_params = element[3]['angle_sweep']
-                            logger.info(f"Assigning sweep_params {sweep_params} to vector {vec.joints[0].name} -> {vec.joints[1].name}")
+                            logger.info(
+                                f"Assigning sweep_params {sweep_params} to vector "
+                                f"{vec.joints[0].name} -> {vec.joints[1].name}"
+                            )
                             break
         if sweep_params is None:
             sweep_params = (-25, 25, 50)  # Default sweep if not specified
-            logger.info(f"No specific sweep_params found for vector {vec.joints[0].name} -> {vec.joints[1].name}. Using default {sweep_params}.")
+            logger.info(f"No specific sweep_params found for vector {vec.joints[0].name} -> {vec.joints[1].name}. "
+                        f"Using default {sweep_params}.")
         sweep_vectors_params.append(sweep_params)
 
     # Ensure that we have sweep parameters for all sweep vectors
@@ -296,7 +305,7 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
         sweep_angles_deg = np.linspace(sweep_start_deg, sweep_end_deg, sweep_num)
         sweep_angles_rad = deg_to_rad(sweep_angles_deg) + sweep_vector.natural_angle
 
-        # Sweep back
+        # Sweep back (if desired to 'oscillate')
         sweep_angles_rev_deg = np.linspace(sweep_end_deg, sweep_start_deg, sweep_num)[1:]
         sweep_angles_rev_rad = deg_to_rad(sweep_angles_rev_deg) + sweep_vector.natural_angle
 
@@ -314,23 +323,23 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
     ]
 
     # Step 13: Build initial guess for unknown angles (ignore user-fixed or sweep)
-    unknown_vectors = [v for v in vectors
-                       if (not getattr(v, "_is_user_fixed_angle", False))
-                       and (v not in sweep_vectors)]
-    if not unknown_vectors:
-        raise ValueError("No unknown angles found. (All bars fixed + sweep vectors => no DOF?)")
+    unknown_vectors = [
+        v for v in vectors
+        if (not getattr(v, "_is_user_fixed_angle", False)) and (v not in sweep_vectors)
+    ]
+    if not unknown_vectors and not sweep_vectors:
+        raise ValueError("No unknown angles found. (All bars fixed + no sweep vectors => no DOF?)")
 
     guess_list = []
     for vec in unknown_vectors:
-        # The original geometry from the spec
         s = None
         e = None
         for el in spec:
             if el[0] == "bar":
                 c1 = round_coord(el[1])
                 c2 = round_coord(el[2])
-                if (joint_names[c1] == vec.joints[0].name and 
-                    joint_names[c2] == vec.joints[1].name):
+                if (joint_names[c1] == vec.joints[0].name and
+                        joint_names[c2] == vec.joints[1].name):
                     s, e = c1, c2
                     break
                 elif (joint_names[c2] == vec.joints[0].name and
@@ -345,7 +354,7 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
             guess_list.append(0.0)
 
     guess_initial = np.array(guess_list)
-    logger.debug("Initial Guess (radians):", guess_initial)
+    logger.debug("Initial Guess (radians): %s", guess_initial)
 
     # Step 14: Identify loops with networkx
     G = nx.Graph()
@@ -403,15 +412,107 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
         vectors=vectors,
         origin=origin_joint,
         loops=loop_func,
-        pos=np.array(sweep_angles_stepwise),  # Ensure pos is correctly set
+        pos=np.array(sweep_angles_stepwise) if sweep_vectors else None,  # If no sweep_vectors, pos=None
         guess=(guess_initial,)
     )
 
-    # Step 18: Iterate
+    # Step 18: Iterate the mechanism
     try:
-        mech.iterate()
+        if sweep_vectors:
+            # If we have any sweep vectors, they define the .pos array
+            mech.iterate()
+        else:
+            # Otherwise, we have a single solve (if everything is fixed except unknowns).
+            # We still use .iterate() with a single step if you prefer, or just .calculate().
+            # For consistency, let's do iterate() in case there's more code that depends on iteration.
+            # We'll shape our .pos as shape[0]==1
+            if len(guess_initial) == 0:
+                # No unknowns at all -> just fix positions once
+                mech.pos = np.array([0.0])  # dummy
+                mech.iterate()
+            else:
+                # We still want to solve once
+                mech.pos = np.array([0.0])  # dummy to let iterate do 1 step
+                mech.iterate()
+
     except Exception as e:
         raise RuntimeError(f"Failed to iterate the mechanism: {e}")
 
+    # ---------------------------------------------------------------------
+    # (NEW) Print angles at each iteration for the followed joints
+    # ---------------------------------------------------------------------
+    _print_followed_joint_angles(mech, logger)
+
     return mech
 
+
+def _print_followed_joint_angles(mech, logger):
+    """
+    For each iteration (frame) in the Mechanism, for each joint that is .follow == True,
+    compute and print the angles between every pair of bars connected to that joint.
+
+    This is done after `mech.iterate()` is completed.
+    """
+    # If mech.pos is a scalar or None, there's effectively 1 'frame'
+    if not isinstance(mech.pos, np.ndarray) or mech.pos.ndim == 0:
+        frames_count = 1
+    else:
+        frames_count = len(mech.pos)
+
+    followed_joints = [j for j in mech.joints if j.follow]
+
+    for i in range(frames_count):
+        for joint in followed_joints:
+            # Find all other joints connected to 'joint'
+            connected_joints = []
+            for v in mech.vectors:
+                j1, j2 = v.joints
+                if j1 == joint:
+                    connected_joints.append(j2)
+                elif j2 == joint:
+                    connected_joints.append(j1)
+
+            # For a single bar or no bar connected, no angle to print
+            if len(connected_joints) < 2:
+                continue
+
+            # Coordinates of 'joint' at this frame
+            # If frames_count == 1, we use x_pos, else x_positions[i]
+            x_j = joint.x_positions[i] if frames_count > 1 else joint.x_pos
+            y_j = joint.y_positions[i] if frames_count > 1 else joint.y_pos
+
+            # Now compute pairwise angles
+            n = len(connected_joints)
+            for a in range(n):
+                for b in range(a + 1, n):
+                    jA = connected_joints[a]
+                    jB = connected_joints[b]
+
+                    if frames_count > 1:
+                        xA = jA.x_positions[i]
+                        yA = jA.y_positions[i]
+                        xB = jB.x_positions[i]
+                        yB = jB.y_positions[i]
+                    else:
+                        xA, yA = jA.x_pos, jA.y_pos
+                        xB, yB = jB.x_pos, jB.y_pos
+
+                    vA = np.array([xA - x_j, yA - y_j])
+                    vB = np.array([xB - x_j, yB - y_j])
+
+                    lenA = np.linalg.norm(vA)
+                    lenB = np.linalg.norm(vB)
+                    if lenA < 1e-12 or lenB < 1e-12:
+                        angle_deg = 0.0
+                    else:
+                        dotp = np.dot(vA, vB)
+                        cos_val = dotp / (lenA * lenB)
+                        # Numerical safety:
+                        cos_val = max(min(cos_val, 1.0), -1.0)
+                        angle_rad = np.arccos(cos_val)
+                        angle_deg = np.degrees(angle_rad)
+
+                    logger.info(
+                        f"Iteration {i}, Joint {joint.name}, angle between {jA.name} and {jB.name}: "
+                        f"{angle_deg:.3f} deg"
+                    )

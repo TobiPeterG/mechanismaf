@@ -3,6 +3,7 @@
 import numpy as np
 from mechanism import Mechanism, Vector, Joint
 import networkx as nx
+import math
 import logging
 
 def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, log_file=None):
@@ -448,71 +449,57 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
 
 def _print_followed_joint_angles(mech, logger):
     """
-    For each iteration (frame) in the Mechanism, for each joint that is .follow == True,
-    compute and print the angles between every pair of bars connected to that joint.
-
-    This is done after `mech.iterate()` is completed.
+    For each iteration (frame) in the Mechanism, for each joint that is flagged as .follow == True,
+    compute and print the angle (relative to the X-axis) of each bar connected to that joint,
+    along with the coordinates of the joint and the connected joint.
+    
+    The angle is computed from the followed joint's position to the position of the other joint of the vector.
     """
-    # If mech.pos is a scalar or None, there's effectively 1 'frame'
+    # If mech.pos is a scalar or None, assume there is one frame.
     if not isinstance(mech.pos, np.ndarray) or mech.pos.ndim == 0:
         frames_count = 1
     else:
         frames_count = len(mech.pos)
 
+    # Select joints that are flagged to be followed.
     followed_joints = [j for j in mech.joints if j.follow]
 
     for i in range(frames_count):
         for joint in followed_joints:
-            # Find all other joints connected to 'joint'
-            connected_joints = []
+            # Determine the current position of the followed joint.
+            if frames_count > 1:
+                x_j = joint.x_positions[i]
+                y_j = joint.y_positions[i]
+            else:
+                x_j, y_j = joint.x_pos, joint.y_pos
+
+            # Loop over all vectors and check if this joint is an endpoint.
+            # For each such vector, compute the angle (in degrees) of the bar with respect to the X-axis.
             for v in mech.vectors:
-                j1, j2 = v.joints
-                if j1 == joint:
-                    connected_joints.append(j2)
-                elif j2 == joint:
-                    connected_joints.append(j1)
+                # Check if this vector is connected to the current joint.
+                # We want to compute the angle from 'joint' to the other joint.
+                if v.joints[0] == joint:
+                    other = v.joints[1]
+                elif v.joints[1] == joint:
+                    other = v.joints[0]
+                else:
+                    continue  # This vector is not connected to the current joint.
 
-            # For a single bar or no bar connected, no angle to print
-            if len(connected_joints) < 2:
-                continue
+                # Get the position of the "other" joint.
+                if frames_count > 1:
+                    x_o = other.x_positions[i]
+                    y_o = other.y_positions[i]
+                else:
+                    x_o, y_o = other.x_pos, other.y_pos
 
-            # Coordinates of 'joint' at this frame
-            # If frames_count == 1, we use x_pos, else x_positions[i]
-            x_j = joint.x_positions[i] if frames_count > 1 else joint.x_pos
-            y_j = joint.y_positions[i] if frames_count > 1 else joint.y_pos
+                # Compute the vector from the followed joint to the other joint.
+                dx = x_o - x_j
+                dy = y_o - y_j
+                # Use arctan2 to get the angle relative to the positive X-axis.
+                angle_rad = math.atan2(dy, dx)
+                angle_deg = math.degrees(angle_rad)
 
-            # Now compute pairwise angles
-            n = len(connected_joints)
-            for a in range(n):
-                for b in range(a + 1, n):
-                    jA = connected_joints[a]
-                    jB = connected_joints[b]
-
-                    if frames_count > 1:
-                        xA = jA.x_positions[i]
-                        yA = jA.y_positions[i]
-                        xB = jB.x_positions[i]
-                        yB = jB.y_positions[i]
-                    else:
-                        xA, yA = jA.x_pos, jA.y_pos
-                        xB, yB = jB.x_pos, jB.y_pos
-
-                    vA = np.array([xA - x_j, yA - y_j])
-                    vB = np.array([xB - x_j, yB - y_j])
-
-                    lenA = np.linalg.norm(vA)
-                    lenB = np.linalg.norm(vB)
-                    if lenA < 1e-12 or lenB < 1e-12:
-                        angle_deg = 0.0
-                    else:
-                        dotp = np.dot(vA, vB)
-                        cos_val = dotp / (lenA * lenB)
-                        # Numerical safety:
-                        cos_val = max(min(cos_val, 1.0), -1.0)
-                        angle_rad = np.arccos(cos_val)
-                        angle_deg = np.degrees(angle_rad)
-
-                    logger.info(
-                        f"Iteration {i}, Joint {joint.name}, angle between {jA.name} and {jB.name}: "
-                        f"{angle_deg:.3f} deg"
-                    )
+                logger.info(
+                    f"Iteration {i}, Joint {joint.name} at ({x_j:.3f}, {y_j:.3f}): "
+                    f"bar to {other.name} at ({x_o:.3f}, {y_o:.3f}) has angle {angle_deg:.3f} deg relative to the X-axis"
+                )

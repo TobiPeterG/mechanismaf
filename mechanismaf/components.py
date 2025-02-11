@@ -190,7 +190,7 @@ def add_angle_joints_texts(mech, ani, ax):
                 continue
             # Create a text annotation near the bar.
             txt = ax.text(joint.x_pos or 0, joint.y_pos or 0, "",
-                          fontsize=8, color="red")
+                          fontsize=8, color="black")
             angle_texts[(joint.name, other.name)] = txt
 
     # Build the set of joints to annotate with joint names.

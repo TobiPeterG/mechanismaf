@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="mechanismaf",
-    version="0.1.3",
+    version="0.1.4",
     description="A wrapper around the 'mechanism' library for the 'Algorithm Folding' lecture @ HPI for creating and transforming linkage mechanisms.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",

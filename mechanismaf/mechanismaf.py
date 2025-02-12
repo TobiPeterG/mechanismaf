@@ -8,19 +8,81 @@ import logging
 
 def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, log_file=None):
     """
-    Creates a linkage mechanism from a specification list, distinguishing between:
-      - Bars that are truly user-fixed (angle automatically calculated from coordinates)
-      - Bars that have unknown angles
-      - Bars that sweep (angle_sweep)
-    Supports multiple sweep vectors.
+    Create and solve a linkage mechanism from a given specification.
 
-    Parameters:
-    - spec: List of specifications defining the mechanism.
-    - follow_points: Optional list of points to follow (those joints become .follow=True).
-    - log_level: Logging level (e.g., logging.DEBUG, logging.INFO).
-    - log_file: Optional path to a file to write logs.
+    This function parses a specification list describing a mechanism made up of “bars”
+    (linkages) connecting joints. Each bar may be:
+      - User-fixed: The bar’s angle is fixed (calculated automatically from its end-point coordinates).
+      - Unknown: The bar’s angle is unknown and will be solved for.
+      - Swept: The bar’s angle is swept over a range (defined by an "angle_sweep" parameter),
+        allowing the mechanism to be animated or iterated over different configurations.
+
+    The function performs the following major steps:
+      1. Configures a logger with the given log level and optional log file.
+      2. Extracts joint coordinates from the specification and assigns each a unique name.
+      3. Identifies and fixes the “ground” joints (those marked with style 'ground') and sets one as the origin.
+      4. Marks joints as “followed” if they are in the provided follow_points list (or default to ground joints).
+      5. Creates Vector objects (bars) linking the joints, setting flags if their angles are user-fixed, unknown,
+         or subject to a sweep.
+      6. Extracts sweep parameters for any sweep vectors and computes the full list of sweep angles.
+      7. Constructs a network (using networkx) to detect loops in the mechanism and assigns the proper loop directions.
+      8. Builds the loop equations function (using a closure) that enforces vector sum constraints around each loop.
+      9. Constructs and solves the Mechanism (an instance of the Mechanism class) by iterating over the sweep angles
+         (or performing a single solve if no sweep is specified).
+     10. Logs the angles at each iteration for joints flagged as “followed” (via the helper function
+         `_print_followed_joint_angles`).
+
+    Parameters
+    ----------
+    spec : list
+        A list of mechanism specifications. Each element is typically a list or tuple where:
+          - The first element is a string (e.g., "bar" or "name").
+          - For a "bar" element, the next two elements are the coordinates of the start and end joints.
+          - An optional fourth element (a dict) may include additional parameters:
+              - 'style': a string (e.g., 'ground') to indicate a fixed bar.
+              - 'angle': a fixed angle in degrees.
+              - 'angle_sweep': a tuple (start_deg, end_deg, num_steps) defining the sweep range.
+          - A "name" element can be used to set the name of the mechanism.
+    follow_points : list of tuple, optional
+        A list of coordinate tuples. Joints with coordinates in this list will be flagged to “follow”
+        (i.e. their angles are printed at each iteration). If not provided, the ground joints are used.
+    log_level : int, optional
+        The logging level (e.g., logging.DEBUG, logging.INFO). Default is logging.INFO.
+    log_file : str, optional
+        A file path to which logs will also be written. If not provided, logging will occur only on the console.
+
+    Returns
+    -------
+    Mechanism
+        An instance of the Mechanism class (from the imported 'mechanism' module) that contains:
+          - The list of vectors (bars) connecting the joints.
+          - The origin joint (with its position fixed).
+          - The loop equation function used for solving the mechanism.
+          - The computed positions for each iteration (if sweep vectors are defined) or a single solution.
+          - The initial guess used for solving unknown angles.
+
+    Raises
+    ------
+    ValueError
+        If no ground joints are found in the specification.
+        If the origin joint cannot be determined or is missing.
+        If there are no unknown angles and no sweep vectors (i.e. the mechanism has no degree-of-freedom).
+        If no loops are found in the mechanism.
+        If there is a mismatch between the number of sweep vectors and the provided sweep parameters.
+    RuntimeError
+        If an error occurs during the mechanism iteration/solving process.
+
+    Notes
+    -----
+    - This function uses a number of inner helper functions to:
+        - Round coordinates to a fixed precision.
+        - Assign names to joints.
+        - Identify unique joints and ground joints.
+        - Generate the loop equations closure needed by the Mechanism.
+    - The function makes extensive use of logging to provide detailed debug and info-level output.
+    - The sweep angles are computed in radians, with a default back-and-forth (oscillating) sweep if not otherwise specified.
+    - The function expects the 'mechanism' module to provide the Mechanism, Vector, and Joint classes.
     """
-
     # Configure the logger
     logger = logging.getLogger(__name__)
     logger.setLevel(log_level)
@@ -449,11 +511,34 @@ def create_linkage_from_spec(spec, follow_points=None, log_level=logging.INFO, l
 
 def _print_followed_joint_angles(mech, logger):
     """
-    For each iteration (frame) in the Mechanism, for each joint that is flagged as .follow == True,
-    compute and print the angle (relative to the X-axis) of each bar connected to that joint,
-    along with the coordinates of the joint and the connected joint.
-    
-    The angle is computed from the followed joint's position to the position of the other joint of the vector.
+    Log the angles of the bars connected to joints that are marked for "following".
+
+    For each iteration (frame) in the given Mechanism, this function finds every joint whose
+    'follow' attribute is True and then computes the angle (relative to the positive X-axis)
+    of every bar connected to that joint. The angle is determined by calculating the direction
+    from the followed joint’s current position to the position of the other joint connected by the bar.
+    The computed angles (in degrees), along with the coordinates of both joints, are logged.
+
+    Parameters
+    ----------
+    mech : Mechanism
+        The Mechanism object (from the 'mechanism' module) which contains:
+          - A list of joints (each may have x_pos, y_pos and/or x_positions, y_positions for multiple iterations).
+          - A list of vectors (bars) connecting the joints.
+          - An attribute 'pos' that may either be a scalar or an array representing the positions
+            (or iterations) of the mechanism.
+    logger : logging.Logger
+        The logger instance used for logging detailed information about each iteration.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    - If mech.pos is a scalar or None, the function assumes there is only a single frame.
+    - The angles are computed using math.atan2 and then converted to degrees.
+    - This function does not modify the mechanism; it only logs information.
     """
     # If mech.pos is a scalar or None, assume there is one frame.
     if not isinstance(mech.pos, np.ndarray) or mech.pos.ndim == 0:
@@ -503,3 +588,4 @@ def _print_followed_joint_angles(mech, logger):
                     f"Iteration {i}, Joint {joint.name} at ({x_j:.3f}, {y_j:.3f}): "
                     f"bar to {other.name} at ({x_o:.3f}, {y_o:.3f}) has angle {angle_deg:.3f} deg relative to the X-axis"
                 )
+
